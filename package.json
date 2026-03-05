@@ -1,0 +1,32 @@
+{
+  "name": "pokemon-api",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "echo \"Error: no test specified\" && exit 1",
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "fetch:gen1": "node scripts/fetchGen1.js",
+    "analyze:gen1": "node scripts/analyzeGen1.js",
+    "seed": "node db/seedDB.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "axios": "^1.13.5",
+    "bcrypt": "^6.0.0",
+    "bcryptjs": "^3.0.3",
+    "better-sqlite3": "^12.6.2",
+    "cors": "^2.8.6",
+    "express": "^5.2.1",
+    "lodash": "^4.17.23",
+    "node-fetch": "^2.7.0",
+    "readline-sync": "^1.4.10",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.11"
+  }
+}

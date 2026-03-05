@@ -1,0 +1,27 @@
+// services/db.js
+const Database = require('better-sqlite3');
+const path = require('path');
+
+const db = new Database(path.resolve(__dirname, '../data/pokemon.db'));const db = new Database(path.resolve(__dirname, '../data/pokemon.db'));
+
+// Users table
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS users (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT UNIQUE,
+    password TEXT
+  )
+`).run();
+
+// Teams table
+db.prepare(`
+  CREATE TABLE IF NOT EXISTS teams (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    user_id INTEGER,
+    team_name TEXT,
+    data TEXT,
+    FOREIGN KEY(user_id) REFERENCES users(id)
+  )
+`).run();
+
+module.exports = db;
