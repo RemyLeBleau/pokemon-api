@@ -1,22 +1,14 @@
-// engine/testBattle.js
-const PokemonFactory = require('./pokemonFactory');
 const Team = require('./team');
 const Battle = require('./battle/Battle');
-
-function getRandom(arr) {
-  return arr[Math.floor(Math.random() * arr.length)];
-}
+const PokemonFactory = require('./pokemonFactory');
+const UserManager = require('./userManager');
 
 async function generateRandomTeam(teamSize = 3) {
-  const allSpecies = await PokemonFactory.getAllSpecies();
+  // Request only final-stage Pokémon or special cases like Pikachu
+  const allSpecies = await PokemonFactory.getAllSpecies({ finalStageOnly: true });
 
-  const selected = [];
-  while (selected.length < teamSize) {
-    const name = getRandom(allSpecies);
-    if (!selected.includes(name)) {
-      selected.push(name);
-    }
-  }
+  const shuffled = [...allSpecies].sort(() => 0.5 - Math.random());
+  const selected = shuffled.slice(0, teamSize);
 
   const pokemonInstances = [];
   for (const name of selected) {
@@ -28,22 +20,39 @@ async function generateRandomTeam(teamSize = 3) {
 }
 
 async function main() {
-  const team1 = await generateRandomTeam();
-  const team2 = await generateRandomTeam();
+  try {
+    // Register or login a user
+    const user = await UserManager.register('testuser', 'password123')
+      .catch(() => UserManager.login('testuser', 'password123'));
 
-  const player1 = {
-    name: "Red",
-    team: team1
-  };
+    // Load or generate team for user
+    let teamData = await UserManager.loadTeam(user.id);
+    let team;
+    if (!teamData || !teamData.pokemon?.length) {
+      team = await generateRandomTeam();
+      await UserManager.saveTeam(user.id, team.pokemon);
+    } else {
+      const PokemonInstance = require('./pokemonInstance');
+      const reconstructed = teamData.pokemon.map((p) => new PokemonInstance(p));
+      team = new Team(reconstructed);
+    }
 
-  const player2 = {
-    name: "Blue",
-    team: team2
-  };
+    // Generate an AI/random opponent team
+    const aiTeam = await generateRandomTeam();
 
-  const battle = new Battle(player1, player2);
+    const player1 = { name: user.username, team };
+    const player2 = { name: 'Blue', team: aiTeam };
 
-  battle.runBattle();
+    const battle = new Battle(player1, player2);
+    battle.runBattle();
+
+    // Increment win if user wins
+    if (battle.winner === user.username) {
+      await UserManager.incrementWin(user.id);
+    }
+  } catch (e) {
+    console.error(e);
+  }
 }
 
-main().catch(console.error);
+main();

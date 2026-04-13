@@ -1,132 +1,187 @@
 const axios = require('axios');
-const _ = require('lodash');
 const fs = require('fs');
 const path = require('path');
 
 const BASE_URL = 'https://pokeapi.co/api/v2';
 const OUTPUT_PATH = path.resolve(__dirname, '../data/gen1-clean.json');
+const VERSION_GROUPS = new Set(['red-blue', 'yellow']);
+const LEARN_METHODS = new Set(['level-up', 'machine']);
+const GEN1_PHYSICAL_TYPES = new Set([
+  'normal', 'fighting', 'flying', 'poison', 'ground', 'rock', 'bug', 'ghost'
+]);
 
-const delay = (ms) => new Promise(res => setTimeout(res, ms));
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
-async function fetchGen1() {
-  console.log('Fetching Gen 1 species list...');
-  const genRes = await axios.get(`${BASE_URL}/generation/1`);
-  const speciesList = genRes.data.pokemon_species;
-
-  const pokemonResults = [];
-
-  for (const species of speciesList) {
-    console.log(`Fetching ${species.name}...`);
-
-    const speciesRes = await axios.get(species.url);
-    const pokemonRes = await axios.get(`${BASE_URL}/pokemon/${species.name}`);
-    const evoRes = await axios.get(speciesRes.data.evolution_chain.url);
-
-    const normalized = normalizePokemon(
-      pokemonRes.data,
-      speciesRes.data,
-      evoRes.data
-    );
-
-    pokemonResults.push(normalized);
-
-    await delay(150);
-  }
-
-  console.log('Collecting unique moves...');
-  const uniqueMoveNames = _.uniq(
-    pokemonResults.flatMap(p => p.moves.map(m => m.name))
-  );
-
-  const moveData = {};
-
-  for (const moveName of uniqueMoveNames) {
-    console.log(`Fetching move data: ${moveName}`);
-    const moveRes = await axios.get(`${BASE_URL}/move/${moveName}`);
-
-    moveData[moveName] = {
-      name: moveRes.data.name,
-      power: moveRes.data.power,
-      accuracy: moveRes.data.accuracy,
-      pp: moveRes.data.pp,
-      type: moveRes.data.type.name,
-      damage_class: moveRes.data.damage_class.name
-    };
-
-    await delay(100);
-  }
-
-  const finalPayload = {
-    pokemon: pokemonResults,
-    moves: moveData
-  };
-
-  fs.writeFileSync(
-    OUTPUT_PATH,
-    JSON.stringify(finalPayload, null, 2)
-  );
-
-  console.log('Gen 1 clean dataset saved.');
+function mapGen1Category(moveType, pokeApiDamageClass) {
+  if (pokeApiDamageClass === 'status') return 'status';
+  return GEN1_PHYSICAL_TYPES.has(moveType) ? 'physical' : 'special';
 }
 
-function normalizePokemon(pokemon, species, evolution) {
+function parseIdFromResourceUrl(url) {
+  const m = String(url).match(/\/(\d+)\/?$/);
+  return m ? Number(m[1]) : null;
+}
+
+function extractBaseStats(pokemonData) {
+  const byName = {};
+  for (const s of pokemonData.stats) byName[s.stat.name] = s.base_stat;
   return {
-    id: pokemon.id,
-    name: pokemon.name,
-
-    stats: pokemon.stats.map(s => ({
-      name: s.stat.name,
-      base: s.base_stat
-    })),
-
-    types: pokemon.types.map(t => t.type.name),
-
-    moves: _.chain(pokemon.moves)
-      .map(m => {
-        const validVersions = m.version_group_details.filter(v =>
-          ['red-blue', 'yellow'].includes(v.version_group.name) &&
-          ['level-up', 'machine'].includes(v.move_learn_method.name)
-        );
-
-        return validVersions.map(v => ({
-          name: m.move.name,
-          learn_method: v.move_learn_method.name,
-          level: v.level_learned_at,
-          version_group: v.version_group.name
-        }));
-      })
-      .flatten()
-      .uniqBy(m => `${m.name}-${m.version_group}`)
-      .value(),
-
-    growth_rate: species.growth_rate.name,
-    capture_rate: species.capture_rate,
-
-    evolutions: flattenEvolution(evolution.chain)
+    base_hp: byName.hp || 0,
+    base_attack: byName.attack || 0,
+    base_defense: byName.defense || 0,
+    // Strict Gen 1: Special is a single stat. Prefer special-attack as source-of-truth.
+    base_special: byName['special-attack'] || byName['special-defense'] || 0,
+    base_speed: byName.speed || 0
   };
 }
 
-function flattenEvolution(chain, parent = null, results = []) {
-  const current = chain.species.name;
-
-  if (parent) {
-    const details = chain.evolution_details[0] || {};
-    results.push({
-      from: parent,
-      to: current,
-      trigger: details.trigger?.name || null,
-      min_level: details.min_level || null,
-      item: details.item?.name || null
-    });
+function extractLegalMoveRefs(pokemonData) {
+  const out = [];
+  for (const m of pokemonData.moves) {
+    for (const detail of m.version_group_details) {
+      const version = detail.version_group.name;
+      const method = detail.move_learn_method.name;
+      if (!VERSION_GROUPS.has(version) || !LEARN_METHODS.has(method)) continue;
+      out.push({
+        move_name: m.move.name,
+        source_method: method === 'machine' ? 'tm/hm' : 'level-up',
+        level_learned: method === 'level-up' ? detail.level_learned_at : null,
+        version_group: version
+      });
+    }
   }
 
-  chain.evolves_to.forEach(next =>
-    flattenEvolution(next, current, results)
-  );
-
-  return results;
+  // De-dupe by move + source + level, keeping lowest level for level-up.
+  const dedup = new Map();
+  for (const x of out) {
+    const key = `${x.move_name}:${x.source_method}`;
+    if (!dedup.has(key)) {
+      dedup.set(key, x);
+      continue;
+    }
+    const current = dedup.get(key);
+    if (x.source_method === 'level-up') {
+      const curLevel = current.level_learned ?? 999;
+      const newLevel = x.level_learned ?? 999;
+      if (newLevel < curLevel) dedup.set(key, x);
+    }
+  }
+  return [...dedup.values()];
 }
 
-fetchGen1().catch(err => {
+function flattenEvolutionChain(node, edges = []) {
+  const fromId = parseIdFromResourceUrl(node.species.url);
+  for (const child of node.evolves_to || []) {
+    const toId = parseIdFromResourceUrl(child.species.url);
+    const d = (child.evolution_details && child.evolution_details[0]) || {};
+    edges.push({
+      from_pokedex_id: fromId,
+      to_pokedex_id: toId,
+      method: d.trigger?.name || 'unknown',
+      level_requirement: d.min_level || null,
+      item_requirement: d.item?.name || null,
+      notes: [
+        d.known_move?.name ? `known_move:${d.known_move.name}` : null,
+        d.time_of_day ? `time:${d.time_of_day}` : null,
+        d.min_happiness ? `happiness:${d.min_happiness}` : null
+      ].filter(Boolean).join('; ') || null
+    });
+    flattenEvolutionChain(child, edges);
+  }
+  return edges;
+}
+
+async function fetchStrictGen1Dataset() {
+  const pokemonRows = [];
+  const legalMovesByPokemon = [];
+  const evolutionEdgeMap = new Map();
+  const neededMoveNames = new Set();
+
+  // HARD FILTER: National Pokedex IDs 1..151.
+  for (let id = 1; id <= 151; id++) {
+    const [pokemonRes, speciesRes] = await Promise.all([
+      axios.get(`${BASE_URL}/pokemon/${id}`),
+      axios.get(`${BASE_URL}/pokemon-species/${id}`)
+    ]);
+    const pokemon = pokemonRes.data;
+    const species = speciesRes.data;
+
+    pokemonRows.push({
+      pokedex_id: pokemon.id,
+      name: pokemon.name,
+      type1: pokemon.types[0]?.type?.name || null,
+      type2: pokemon.types[1]?.type?.name || null,
+      sprite_url: pokemon.sprites?.front_default || null,
+      ...extractBaseStats(pokemon)
+    });
+
+    const legalRefs = extractLegalMoveRefs(pokemon);
+    for (const r of legalRefs) {
+      legalMovesByPokemon.push({ pokedex_id: pokemon.id, ...r });
+      neededMoveNames.add(r.move_name);
+    }
+
+    // Evolutions are explicit DB rows, not inferred at runtime.
+    const evoRes = await axios.get(species.evolution_chain.url);
+    const edges = flattenEvolutionChain(evoRes.data.chain);
+    for (const e of edges) {
+      if (
+        Number.isInteger(e.from_pokedex_id) &&
+        Number.isInteger(e.to_pokedex_id) &&
+        e.from_pokedex_id >= 1 && e.from_pokedex_id <= 151 &&
+        e.to_pokedex_id >= 1 && e.to_pokedex_id <= 151
+      ) {
+        const key = `${e.from_pokedex_id}->${e.to_pokedex_id}:${e.method}:${e.level_requirement || ''}:${e.item_requirement || ''}`;
+        evolutionEdgeMap.set(key, e);
+      }
+    }
+
+    if (id % 20 === 0) console.log(`Fetched ${id}/151 species...`);
+    await sleep(80);
+  }
+
+  const moveDefs = [];
+  for (const moveName of [...neededMoveNames].sort()) {
+    const { data: move } = await axios.get(`${BASE_URL}/move/${moveName}`);
+    // Strict Gen 1 move filter: move must belong to generation-i.
+    if (move.generation?.name !== 'generation-i') continue;
+    moveDefs.push({
+      move_name: move.name,
+      type: move.type?.name || 'normal',
+      power: move.power ?? 0,
+      accuracy: move.accuracy ?? 100,
+      pp: move.pp ?? 35,
+      category: mapGen1Category(move.type?.name || 'normal', move.damage_class?.name || 'status')
+    });
+    await sleep(30);
+  }
+
+  const allowedMoveNames = new Set(moveDefs.map((m) => m.move_name));
+  const filteredLegalMoves = legalMovesByPokemon.filter((x) => allowedMoveNames.has(x.move_name));
+
+  return {
+    meta: {
+      scope: 'strict-gen1',
+      pokedex_filter: [1, 151],
+      version_groups: [...VERSION_GROUPS],
+      legal_learn_methods: [...LEARN_METHODS]
+    },
+    pokemon: pokemonRows,
+    moves: moveDefs,
+    pokemon_legal_moves: filteredLegalMoves,
+    evolutions: [...evolutionEdgeMap.values()]
+  };
+}
+
+async function main() {
+  console.log('Fetching strict Gen 1 dataset from PokeAPI...');
+  const data = await fetchStrictGen1Dataset();
+  fs.writeFileSync(OUTPUT_PATH, JSON.stringify(data, null, 2));
+  console.log(`Wrote ${data.pokemon.length} Pokemon, ${data.moves.length} moves, ${data.pokemon_legal_moves.length} legal move links, ${data.evolutions.length} evolution edges`);
+  console.log(`Saved to: ${OUTPUT_PATH}`);
+}
+
+main().catch((err) => {
   console.error(err);
+  process.exit(1);
 });

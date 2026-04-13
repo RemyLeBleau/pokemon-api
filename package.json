@@ -4,12 +4,19 @@
   "description": "",
   "main": "index.js",
   "scripts": {
-    "test": "echo \"Error: no test specified\" && exit 1",
+    "test": "node scripts/runSampleBattles.js 5",
     "start": "node server.js",
     "dev": "nodemon server.js",
+    "start:dev": "nodemon server.js",
     "fetch:gen1": "node scripts/fetchGen1.js",
     "analyze:gen1": "node scripts/analyzeGen1.js",
-    "seed": "node db/seedDB.js"
+    "seed": "node scripts/seedAll.js",
+    "sample-battles": "node scripts/runSampleBattles.js",
+    "sample-battles:1000": "node scripts/runSampleBattles.js 1000",
+    "damage-sim": "node scripts/runDamageSim.js",
+    "damage-sim:100k": "node scripts/runDamageSim.js 100000",
+    "validate-engine": "node scripts/validateGen1Engine.js",
+    "validate-engine:file": "node scripts/validateGen1Engine.js logs/damage-sim-stats.json"
   },
   "keywords": [],
   "author": "",
@@ -20,13 +27,19 @@
     "bcryptjs": "^3.0.3",
     "better-sqlite3": "^12.6.2",
     "cors": "^2.8.6",
+    "dotenv": "^17.3.1",
     "express": "^5.2.1",
+    "express-session": "^1.19.0",
     "lodash": "^4.17.23",
     "node-fetch": "^2.7.0",
+    "passport": "^0.7.0",
+    "passport-google-oauth20": "^2.0.0",
     "readline-sync": "^1.4.10",
+    "socket.io": "^4.8.3",
+    "socket.io-client": "^4.8.3",
     "sqlite3": "^5.1.7"
   },
   "devDependencies": {
-    "nodemon": "^3.1.11"
+    "nodemon": "^3.1.14"
   }
 }

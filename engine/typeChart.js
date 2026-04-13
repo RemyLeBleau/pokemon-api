@@ -28,4 +28,4 @@ function getTypeEffectiveness(moveType, defenderTypes) {
   return multiplier;
 }
 
-module.exports = { getTypeEffectiveness };
+module.exports = { getTypeEffectiveness, typeChart };

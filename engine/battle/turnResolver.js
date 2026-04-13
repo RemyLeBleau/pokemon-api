@@ -15,8 +15,19 @@ function resolveTurn({ battle, action1, action2 }) {
   const p1Active = battle.p1Active;
   const p2Active = battle.p2Active;
 
-  const p1Speed = p1Active?.stats.speed || 0;
-  const p2Speed = p2Active?.stats.speed || 0;
+  // Guard: ensure both sides have an active Pokémon
+  if (!p1Active || !p2Active) {
+    events.push({
+      type: 'error',
+      message: 'Battle turn attempted with missing active Pokémon',
+      p1Active: p1Active ? p1Active.name : null,
+      p2Active: p2Active ? p2Active.name : null
+    });
+    return { events };
+  }
+
+  const p1Speed = p1Active.stats?.speed ?? 0;
+  const p2Speed = p2Active.stats?.speed ?? 0;
 
   // Determine move order: speed first, ties favor Player1
   const first = p1Speed >= p2Speed

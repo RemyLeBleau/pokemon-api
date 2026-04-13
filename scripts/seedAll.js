@@ -1,178 +1,227 @@
-// scripts/seedAll.js
-const db = require('../db/database'); // points to db/database.js
 const fs = require('fs');
+const path = require('path');
+const db = require('../db/database');
 
-// -------------------------------
-// Helper: Sleep to avoid API rate limit
-// -------------------------------
-function sleep(ms) {
-  return new Promise(resolve => setTimeout(resolve, ms));
-}
+const DATA_PATH = path.resolve(__dirname, '../data/gen1-clean.json');
 
-// -------------------------------
-// Table creation SQL
-// -------------------------------
-async function resetTables() {
+function run(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.serialize(() => {
-      db.run(`DROP TABLE IF EXISTS moves`);
-      db.run(`DROP TABLE IF EXISTS pokemon`);
-
-      db.run(`
-        CREATE TABLE pokemon (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          name TEXT,
-          type1 TEXT,
-          type2 TEXT,
-          base_hp INTEGER,
-          base_attack INTEGER,
-          base_defense INTEGER,
-          base_special INTEGER,
-          base_speed INTEGER
-        )
-      `);
-
-      db.run(`
-        CREATE TABLE moves (
-          id INTEGER PRIMARY KEY AUTOINCREMENT,
-          pokemon_id INTEGER,
-          move_name TEXT,
-          type TEXT,
-          power INTEGER,
-          accuracy INTEGER,
-          pp INTEGER,
-          category TEXT,
-          FOREIGN KEY(pokemon_id) REFERENCES pokemon(id)
-        )
-      `, (err) => {
-        if (err) return reject(err);
-        resolve();
-      });
+    db.run(sql, params, function onRun(err) {
+      if (err) return reject(err);
+      resolve(this);
     });
   });
 }
 
-// -------------------------------
-// Fetch Gen 1 Pokémon from PokéAPI
-// -------------------------------
-async function fetchGen1Pokemon() {
-  const res = await fetch('https://pokeapi.co/api/v2/pokemon?limit=151');
-  const data = await res.json();
-  return data.results; // array of { name, url }
-}
-
-// -------------------------------
-// Fetch detailed Pokémon data
-// -------------------------------
-async function fetchPokemonData(url) {
-  const res = await fetch(url);
-  const data = await res.json();
-  // Extract types
-  const types = data.types.map(t => t.type.name);
-  // Extract base stats
-  const stats = {};
-  data.stats.forEach(s => {
-    const name = s.stat.name;
-    if (name === 'hp') stats.base_hp = s.base_stat;
-    if (name === 'attack') stats.base_attack = s.base_stat;
-    if (name === 'defense') stats.base_defense = s.base_stat;
-    if (name === 'special-attack' || name === 'special-defense') {
-      // In Gen 1, we treat both special-attack/defense as single "special"
-      stats.base_special = s.base_stat;
-    }
-    if (name === 'speed') stats.base_speed = s.base_stat;
-  });
-
-  // Get moves: pick 3 strongest native + 1 TM
-  let moves = data.moves
-    .filter(m => m.version_group_details.some(v => v.version_group.name === 'red-blue')) // Gen1
-    .map(m => ({ name: m.move.name, url: m.move.url }));
-
-  // Sort moves by power (fetch power separately)
-  const moveDetails = [];
-  for (let i = 0; i < moves.length; i++) {
-    const moveRes = await fetch(moves[i].url);
-    const moveData = await moveRes.json();
-    // Only include moves with power (ignore status if we want attack only)
-    moveDetails.push({
-      name: moveData.name,
-      type: moveData.type.name,
-      power: moveData.power || 0,
-      accuracy: moveData.accuracy || 100,
-      pp: moveData.pp || 15,
-      category: moveData.damage_class.name // physical, special, status
-    });
-    await sleep(50); // tiny delay to be polite to API
-  }
-
-  // pick top 3 by power
-  moveDetails.sort((a, b) => b.power - a.power);
-  const selectedMoves = moveDetails.slice(0, 3);
-
-  // pick a random TM move from the remaining moves (power > 0)
-  const tmCandidates = moveDetails.filter(m => m.power > 0 && !selectedMoves.includes(m));
-  if (tmCandidates.length > 0) selectedMoves.push(tmCandidates[Math.floor(Math.random() * tmCandidates.length)]);
-
-  return { types, stats, moves: selectedMoves };
-}
-
-// -------------------------------
-// Insert Pokémon & moves into DB
-// -------------------------------
-async function insertPokemon(name, types, stats, moves) {
+function all(sql, params = []) {
   return new Promise((resolve, reject) => {
-    db.run(
-      `INSERT INTO pokemon (name,type1,type2,base_hp,base_attack,base_defense,base_special,base_speed) VALUES (?,?,?,?,?,?,?,?)`,
-      [
-        name,
-        types[0],
-        types[1] || null,
-        stats.base_hp,
-        stats.base_attack,
-        stats.base_defense,
-        stats.base_special,
-        stats.base_speed
-      ],
-      function (err) {
-        if (err) return reject(err);
-        const pokemonId = this.lastID;
-
-        // insert moves
-        const stmt = db.prepare(`INSERT INTO moves (pokemon_id,move_name,type,power,accuracy,pp,category) VALUES (?,?,?,?,?,?,?)`);
-        moves.forEach(m => {
-          stmt.run(pokemonId, m.name, m.type, m.power, m.accuracy, m.pp, m.category);
-        });
-        stmt.finalize();
-        resolve();
-      }
-    );
+    db.all(sql, params, (err, rows) => {
+      if (err) return reject(err);
+      resolve(rows);
+    });
   });
 }
 
-// -------------------------------
-// Main seeding function
-// -------------------------------
-async function seedAll() {
-  console.log('Resetting tables...');
-  await resetTables();
+async function resetSchema() {
+  await run('PRAGMA foreign_keys = OFF');
+  await run('BEGIN TRANSACTION');
+  try {
+    // Drop compatibility first, then normalized.
+    await run('DROP TABLE IF EXISTS moves');
+    await run('DROP TABLE IF EXISTS pokemon_legal_moves');
+    await run('DROP TABLE IF EXISTS move_defs');
+    await run('DROP TABLE IF EXISTS evolutions');
+    await run('DROP TABLE IF EXISTS pokemon');
 
-  console.log('Fetching Gen 1 Pokémon...');
-  const pokemonList = await fetchGen1Pokemon();
+    // Pokemon species table (one row per species, strict 1..151).
+    await run(`
+      CREATE TABLE pokemon (
+        pokedex_id INTEGER PRIMARY KEY,
+        name TEXT UNIQUE NOT NULL,
+        type1 TEXT NOT NULL,
+        type2 TEXT,
+        sprite_url TEXT,
+        base_hp INTEGER NOT NULL,
+        base_attack INTEGER NOT NULL,
+        base_defense INTEGER NOT NULL,
+        base_special INTEGER NOT NULL,
+        base_speed INTEGER NOT NULL
+      )
+    `);
 
-  for (let i = 0; i < pokemonList.length; i++) {
-    const p = pokemonList[i];
-    console.log(`Seeding ${p.name} (${i + 1}/${pokemonList.length})...`);
-    try {
-      const { types, stats, moves } = await fetchPokemonData(p.url);
-      await insertPokemon(p.name, types, stats, moves);
-      await sleep(50); // avoid rate limits
-    } catch (err) {
-      console.error(`Error seeding ${p.name}:`, err);
-    }
+    // Normalized move definitions.
+    await run(`
+      CREATE TABLE move_defs (
+        move_name TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        power INTEGER NOT NULL,
+        accuracy INTEGER NOT NULL,
+        pp INTEGER NOT NULL,
+        category TEXT NOT NULL CHECK(category IN ('physical', 'special', 'status'))
+      )
+    `);
+
+    // Pivot: legal Gen 1 move pool by species and source.
+    await run(`
+      CREATE TABLE pokemon_legal_moves (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pokedex_id INTEGER NOT NULL,
+        move_name TEXT NOT NULL,
+        source_method TEXT NOT NULL CHECK(source_method IN ('level-up', 'tm/hm')),
+        level_learned INTEGER,
+        version_group TEXT NOT NULL,
+        UNIQUE(pokedex_id, move_name, source_method),
+        FOREIGN KEY(pokedex_id) REFERENCES pokemon(pokedex_id),
+        FOREIGN KEY(move_name) REFERENCES move_defs(move_name)
+      )
+    `);
+
+    // Explicit Gen 1 evolution edges (stored, not inferred later).
+    await run(`
+      CREATE TABLE evolutions (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        from_pokedex_id INTEGER NOT NULL,
+        to_pokedex_id INTEGER NOT NULL,
+        method TEXT NOT NULL,
+        level_requirement INTEGER NOT NULL DEFAULT -1,
+        item_requirement TEXT NOT NULL DEFAULT '',
+        notes TEXT,
+        UNIQUE(from_pokedex_id, to_pokedex_id, method, level_requirement, item_requirement),
+        FOREIGN KEY(from_pokedex_id) REFERENCES pokemon(pokedex_id),
+        FOREIGN KEY(to_pokedex_id) REFERENCES pokemon(pokedex_id)
+      )
+    `);
+
+    // Compatibility table for existing app queries (engine currently reads this).
+    await run(`
+      CREATE TABLE moves (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        pokemon_id INTEGER NOT NULL,
+        move_name TEXT NOT NULL,
+        type TEXT NOT NULL,
+        power INTEGER NOT NULL,
+        accuracy INTEGER NOT NULL,
+        pp INTEGER NOT NULL,
+        category TEXT NOT NULL,
+        source_method TEXT,
+        level_learned INTEGER,
+        FOREIGN KEY(pokemon_id) REFERENCES pokemon(pokedex_id)
+      )
+    `);
+
+    await run('COMMIT');
+  } catch (err) {
+    await run('ROLLBACK');
+    throw err;
+  } finally {
+    await run('PRAGMA foreign_keys = ON');
   }
-
-  console.log('✅ Seeding complete — 151 Pokémon + moves inserted!');
-  process.exit(0);
 }
 
-seedAll();
+function loadData() {
+  if (!fs.existsSync(DATA_PATH)) {
+    throw new Error(`Dataset not found at ${DATA_PATH}. Run: npm run fetch:gen1`);
+  }
+  const parsed = JSON.parse(fs.readFileSync(DATA_PATH, 'utf8'));
+  if (!Array.isArray(parsed.pokemon) || !Array.isArray(parsed.moves) || !Array.isArray(parsed.pokemon_legal_moves)) {
+    throw new Error('Invalid dataset format. Re-run fetch script.');
+  }
+  return parsed;
+}
+
+async function insertData(data) {
+  await run('BEGIN TRANSACTION');
+  try {
+    for (const p of data.pokemon) {
+      // HARD FILTER: strict National Pokedex IDs 1..151.
+      if (!Number.isInteger(p.pokedex_id) || p.pokedex_id < 1 || p.pokedex_id > 151) continue;
+      await run(
+        `INSERT INTO pokemon
+          (pokedex_id, name, type1, type2, sprite_url, base_hp, base_attack, base_defense, base_special, base_speed)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [
+          p.pokedex_id, p.name, p.type1, p.type2 || null, p.sprite_url || null,
+          p.base_hp, p.base_attack, p.base_defense, p.base_special, p.base_speed
+        ]
+      );
+    }
+
+    for (const m of data.moves) {
+      await run(
+        `INSERT INTO move_defs (move_name, type, power, accuracy, pp, category)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [m.move_name, m.type, m.power ?? 0, m.accuracy ?? 100, m.pp ?? 35, m.category]
+      );
+    }
+
+    for (const pm of data.pokemon_legal_moves) {
+      if (pm.pokedex_id < 1 || pm.pokedex_id > 151) continue;
+      await run(
+        `INSERT OR IGNORE INTO pokemon_legal_moves
+          (pokedex_id, move_name, source_method, level_learned, version_group)
+         VALUES (?, ?, ?, ?, ?)`,
+        [pm.pokedex_id, pm.move_name, pm.source_method, pm.level_learned ?? null, pm.version_group]
+      );
+    }
+
+    for (const e of data.evolutions || []) {
+      if (e.from_pokedex_id < 1 || e.from_pokedex_id > 151 || e.to_pokedex_id < 1 || e.to_pokedex_id > 151) continue;
+      await run(
+        `INSERT OR IGNORE INTO evolutions
+          (from_pokedex_id, to_pokedex_id, method, level_requirement, item_requirement, notes)
+         VALUES (?, ?, ?, ?, ?, ?)`,
+        [e.from_pokedex_id, e.to_pokedex_id, e.method, e.level_requirement ?? -1, e.item_requirement ?? '', e.notes ?? null]
+      );
+    }
+
+    // Compatibility population for existing queries (full legal pool, deterministic selection can happen in app layer).
+    await run(`
+      INSERT INTO moves (pokemon_id, move_name, type, power, accuracy, pp, category, source_method, level_learned)
+      SELECT plm.pokedex_id, md.move_name, md.type, md.power, md.accuracy, md.pp, md.category, plm.source_method, plm.level_learned
+      FROM pokemon_legal_moves plm
+      JOIN move_defs md ON md.move_name = plm.move_name
+    `);
+
+    await run('COMMIT');
+  } catch (err) {
+    await run('ROLLBACK');
+    throw err;
+  }
+}
+
+async function verifySeed() {
+  const [speciesCountRow] = await all('SELECT COUNT(*) AS c FROM pokemon WHERE pokedex_id BETWEEN 1 AND 151');
+  const [minMaxRow] = await all('SELECT MIN(pokedex_id) AS min_id, MAX(pokedex_id) AS max_id FROM pokemon');
+  const [moveCountRow] = await all('SELECT COUNT(*) AS c FROM move_defs');
+  const [legalPoolCountRow] = await all('SELECT COUNT(*) AS c FROM pokemon_legal_moves');
+  const [evoCountRow] = await all('SELECT COUNT(*) AS c FROM evolutions');
+  return {
+    species_count: speciesCountRow.c,
+    min_id: minMaxRow.min_id,
+    max_id: minMaxRow.max_id,
+    move_defs_count: moveCountRow.c,
+    legal_move_links: legalPoolCountRow.c,
+    evolutions_count: evoCountRow.c
+  };
+}
+
+async function main() {
+  console.log('Resetting strict Gen 1 schema...');
+  await resetSchema();
+  const data = loadData();
+  console.log('Seeding strict Gen 1 dataset...');
+  await insertData(data);
+  const summary = await verifySeed();
+  console.log('Seed complete:', summary);
+
+  if (summary.species_count !== 151 || summary.min_id !== 1 || summary.max_id !== 151) {
+    throw new Error(`Seed verification failed: expected strict 151 species, got ${JSON.stringify(summary)}`);
+  }
+}
+
+main()
+  .then(() => process.exit(0))
+  .catch((err) => {
+    console.error(err);
+    process.exit(1);
+  });
