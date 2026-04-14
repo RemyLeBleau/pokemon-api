@@ -1,0 +1,112 @@
+Rob's Wild World of Pokémon — Project Summary & Roadmap
+
+Project Overview:
+- CLI-based Gen 1 Pokémon battle simulator in Node.js
+- Users can create accounts, build 6-Pokémon teams, and battle AI trainers
+- Numerical HP display, Gen 1 type effectiveness, critical hits, STAB
+- Users/teams persist across sessions
+
+Current Structure:
+
+engine/
+  testBattle.js       - CLI entry point; login, team selection, battles
+  battle.js           - Battle logic: turn order, move execution, HP tracking
+  ai.js               - AI move selection logic
+
+services/
+  userService.js      - User creation/login and persistence
+  teamService.js      - Save/load user teams
+  aiTeams.js          - Generate AI teams
+  db.js               - SQLite wrapper
+
+game logic modules:
+  pokemonFactory.js   - Fetch and normalize species/move data from PokeAPI
+  pokemonInstance.js  - Instantiate Pokémon with stats, moves, types, level, HP
+  team.js             - Team class for 6 Pokémon
+  damageCalculator.js - Core damage formulas, type multipliers, critical hits, STAB
+
+Dependencies:
+- Node.js v22.20.0
+- readline-sync (CLI input)
+- axios (API fetching)
+- better-sqlite3 (SQLite persistence)
+- bcrypt (planned for password hashing)
+
+Current Status:
+- Users: creation/login working; passwords plain-text
+- Teams: build 6 Pokémon, saved and reloaded via SQLite
+- Battles: CLI, numerical HP, type effectiveness, critical hits, STAB
+- AI: Gen 1 style move selection; basic AI teams
+- Full Gen 1 type chart implemented
+
+Known Issues:
+- Circular dependency warnings between battle.js ↔ ai.js
+- Duplicate declarations of calculateDamage/getTypeMultiplier
+- CLI password input not hidden
+- AI teams need refinement to mimic final trainer logic
+- Dependencies (better-sqlite3, bcrypt) require npm install
+
+Next Objectives / Roadmap:
+1. Resolve circular dependencies between battle.js and ai.js
+2. Refactor AI move logic to use calculateDamage without duplication
+3. Finalize persistence: secure passwords, auto-load saved teams
+4. Refactor battle flow: remove duplicates, simplify turn logic
+5. Enhance AI team selection: final trainer-like coverage
+6. Optional polish: hide password input, improve DB schema, add text summaries at battle end
+
+
+//NEXT STEPS
+
+# Pokémon Gen 1 Battle Simulator API
+
+This project is a Node.js / Express / SQLite Pokémon battle simulator for Gen 1 mechanics. It supports deterministic battles with status effects, residual damage, AI-controlled moves, and a Postman-ready API.
+
+Project Structure:
+
+pokemon-api/
+├─ app.js                 # Express app with Pokémon & Battle routes
+├─ server.js              # Starts the Express server
+├─ db/
+│  ├─ database.js         # SQLite connection
+│  ├─ init.js             # DB initialization and seeding
+├─ engine/
+│  ├─ battle/
+│  │  ├─ Battle.js        # Full Gen 1 battle engine
+│  │  ├─ turnResolver.js  # Damage, status, and turn resolution logic
+│  ├─ core/
+│  │  ├─ rng.js           # Deterministic RNG
+│  ├─ ai.js               # AI move selection
+│  ├─ pokemonFactory.js   # Pokémon creation logic
+├─ engine/testBattle.js    # CLI test runner for battles
+├─ package.json            # Dependencies
+
+Dependencies:
+
+- Node.js 18+  
+- Express  
+- SQLite3  
+
+Setup:
+
+1. Install dependencies:  
+
+Database:
+
+- Seeded with 2 Pokémon (Pikachu #1, Charizard #2)  
+- Future work: full Gen 1 Pokémon and moves table  
+
+Testing:
+
+- Use Postman with the endpoints above  
+- `engine/testBattle.js` allows CLI battle simulation  
+- Battle output is deterministic JSON via `rng.js`  
+
+Next Steps:
+
+1. Fully seed database with all Gen 1 Pokémon and moves  
+2. Accept move IDs instead of full move objects in `/battle/turn`  
+3. Implement automatic AI move selection  
+4. Expand Postman collection for multiple battles  
+5. Optional: add persistence for battle history
+
+POST for BATTLE START AND TURN RUNNING
